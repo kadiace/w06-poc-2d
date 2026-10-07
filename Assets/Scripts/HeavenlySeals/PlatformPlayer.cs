@@ -8,11 +8,12 @@ public sealed class PlatformPlayer : MonoBehaviour
     [SerializeField] private float jumpSpeed = 10f;
     [SerializeField] private float dashSpeed = 16f;
     [SerializeField] private float dashDuration = 0.12f;
-    [SerializeField] private float dashCooldown = 0.35f;
+    [SerializeField] private float dashDurationPerStage = 0.02f;
 
     public int Facing { get; private set; } = 1;
-    public bool IsInvulnerable => Time.time < dashEndsAt;
+    public bool IsInvulnerable => Time.time < invulnerableEndsAt;
     public bool IsGrounded { get; private set; }
+    public bool DashRequestedThisFrame { get; private set; }
 
     private Rigidbody2D body;
     private Transform nose;
@@ -20,7 +21,7 @@ public sealed class PlatformPlayer : MonoBehaviour
     private float horizontal;
     private bool jumpRequested;
     private float dashEndsAt;
-    private float nextDashAt;
+    private float invulnerableEndsAt;
     private readonly Color bodyColor = new Color(0.3f, 0.8f, 1f);
 
     private void Awake()
@@ -35,6 +36,7 @@ public sealed class PlatformPlayer : MonoBehaviour
 
     private void Update()
     {
+        DashRequestedThisFrame = false;
         Keyboard keyboard = Keyboard.current;
         horizontal = keyboard == null ? 0f :
             (keyboard.rightArrowKey.isPressed ? 1f : 0f) - (keyboard.leftArrowKey.isPressed ? 1f : 0f);
@@ -44,15 +46,20 @@ public sealed class PlatformPlayer : MonoBehaviour
         if (keyboard != null)
         {
             jumpRequested |= keyboard.spaceKey.wasPressedThisFrame;
-            if ((keyboard.leftShiftKey.wasPressedThisFrame || keyboard.rightShiftKey.wasPressedThisFrame)
-                && Time.time >= nextDashAt)
+            if (keyboard.leftShiftKey.wasPressedThisFrame || keyboard.rightShiftKey.wasPressedThisFrame)
             {
-                dashEndsAt = Time.time + dashDuration;
-                nextDashAt = Time.time + dashCooldown;
+                DashRequestedThisFrame = true;
             }
         }
 
         nose.localPosition = new Vector3(Facing * 0.16f, 0.16f, -0.1f);
+        bodyMaterial.color = IsInvulnerable ? Color.white : bodyColor;
+    }
+
+    public void StartDash(int stage)
+    {
+        dashEndsAt = Time.time + dashDuration + dashDurationPerStage * stage;
+        invulnerableEndsAt = stage > 0 ? Time.time + dashDuration : Time.time;
         bodyMaterial.color = IsInvulnerable ? Color.white : bodyColor;
     }
 
@@ -61,8 +68,9 @@ public sealed class PlatformPlayer : MonoBehaviour
         RaycastHit2D ground = Physics2D.BoxCast(body.position + Vector2.down * 0.4f,
             new Vector2(0.4f, 0.02f), 0f, Vector2.down, 0.06f, 1 << 6);
         IsGrounded = ground.collider != null && ground.normal.y > 0.5f;
-        body.gravityScale = IsInvulnerable ? 0f : 3f;
-        if (IsInvulnerable)
+        bool isDashing = Time.time < dashEndsAt;
+        body.gravityScale = isDashing ? 0f : 3f;
+        if (isDashing)
             body.linearVelocity = new Vector2(Facing * dashSpeed, 0f);
         else
             body.linearVelocity = new Vector2(horizontal * moveSpeed,
