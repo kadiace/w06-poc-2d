@@ -12,5 +12,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: a2c80c24ec2e4047978e38d2c80c9576, type: 3}
   m_Name: GameInfo
   m_EditorClassIdentifier: Assembly-CSharp::GameInfo
-  _bpm: 180
-  _timingToleranceSeconds: 0.1
+  _bpm: 120
+  _timingToleranceSeconds: 0.15
+  _parryToleranceStepSeconds: 0.01
+  _maxParryToleranceBonusSeconds: 0.05

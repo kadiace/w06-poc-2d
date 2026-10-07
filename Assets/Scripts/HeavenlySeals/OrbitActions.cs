@@ -1,26 +1,34 @@
 using UnityEngine;
 using UnityEngine.InputSystem;
+using System.Collections.Generic;
 
 [DefaultExecutionOrder(10)]
 [RequireComponent(typeof(PlatformPlayer))]
 public sealed class OrbitActions : MonoBehaviour
 {
     public const float OrbitRadius = 0.5f;
-    public static float CircleDiameter
+    public float CircleDiameter
     {
         get
         {
             // Beyond half a beat, adjacent success windows already cover the entire cycle.
-            float halfWindowAngle = Mathf.Min(AngularSpeed * Managers.Beat.GameInfo.TimingToleranceSeconds, Mathf.PI / 3f);
+            float halfWindowAngle = Mathf.Min(AngularSpeed * EffectiveTimingToleranceSeconds, Mathf.PI / 3f);
             return 2f * OrbitRadius * Mathf.Sin(halfWindowAngle * 0.5f);
         }
     }
     public static float AngularSpeed => 2f * Mathf.PI / (3f * Managers.Beat.BeatInterval);
+    public float TimingToleranceBonusSeconds { get; private set; }
+    public float EffectiveTimingToleranceSeconds => Managers.Beat.GameInfo.TimingToleranceSeconds
+        + Mathf.Min(TimingToleranceBonusSeconds, Managers.Beat.GameInfo.MaxParryToleranceBonusSeconds);
+    public int ConsecutiveParryFailures { get; private set; }
+    public int ConsecutiveParrySuccesses { get; private set; }
     public bool CanAct { get; private set; }
     public int StreakStage { get; private set; }
     public int ParryStage { get; private set; }
     public int AttackStage { get; private set; }
     public int InteractionStage { get; private set; }
+    public int AttackSequence { get; private set; }
+    public int ParrySequence { get; private set; }
     public bool IsParrying => Time.time - parryStarted < ParryDuration;
     public bool IsAttacking => Time.time - attackStarted < AttackDuration;
     public bool IsInteracting => Time.time - interactionStarted < InteractionDuration;
@@ -34,6 +42,7 @@ public sealed class OrbitActions : MonoBehaviour
     public Rect AttackBounds => new Rect(AttackCenter - AttackSize * 0.5f, AttackSize);
     public float InteractionRadius => 1.25f * StageScale(InteractionStage);
     public Vector2 InteractionCenter => transform.position;
+    public float InteractionPulseRadius { get; private set; }
 
     private PlatformPlayer player;
     private readonly Transform[] circles = new Transform[3];
@@ -46,6 +55,9 @@ public sealed class OrbitActions : MonoBehaviour
     private float parryStarted = -10f;
     private float attackStarted = -10f;
     private float interactionStarted = -10f;
+    private bool interactionExpanding;
+    private float interactionMaxRadius;
+    private readonly HashSet<Component> interactionTargets = new HashSet<Component>();
     private const float ParryDuration = 0.18f;
     private const float AttackDuration = 0.22f;
     private const float InteractionDuration = 0.3f;
@@ -76,7 +88,7 @@ public sealed class OrbitActions : MonoBehaviour
             new Vector3(0f, 0f, depth), new Vector3(diameter, diameter, 0.025f), color);
     }
 
-    private void Update()
+    private void UpdateTiming()
     {
         float phase = (float)(Managers.Beat.TotalBeats % circles.Length) * 2f * Mathf.PI / circles.Length;
         float circleDiameter = CircleDiameter;
@@ -88,41 +100,85 @@ public sealed class OrbitActions : MonoBehaviour
         for (int i = 0; i < circles.Length; i++)
         {
             float angle = phase + i * 2f * Mathf.PI / 3f;
-            Vector2 position = new Vector2(Mathf.Cos(angle), Mathf.Sin(angle)) * OrbitRadius;
+            Vector2 position = new Vector2(player.Facing * Mathf.Cos(angle), Mathf.Sin(angle)) * OrbitRadius;
             circles[i].localPosition = new Vector3(position.x, position.y, -0.2f);
             circles[i].localScale = circleScale;
             // Two equal circles overlap when their center distance is at most their diameter.
             CanAct |= (position - guidePosition).sqrMagnitude <= circleDiameter * circleDiameter;
         }
 
+    }
+
+    private void Update()
+    {
+        UpdateTiming();
         Keyboard keyboard = Keyboard.current;
         if (keyboard != null)
         {
-            if (keyboard.aKey.wasPressedThisFrame && AdvanceStage())
+            if (keyboard.aKey.wasPressedThisFrame)
             {
-                ParryStage = StreakStage;
-                parryStarted = Time.time;
+                bool success = AdvanceStage();
+                if (success)
+                {
+                    ParryStage = StreakStage;
+                    parryStarted = Time.time;
+                    ParrySequence++;
+                }
+                AdjustParryTolerance(success);
             }
             if (keyboard.sKey.wasPressedThisFrame && AdvanceStage())
             {
                 AttackStage = StreakStage;
                 attackStarted = Time.time;
+                AttackSequence++;
             }
             if (keyboard.dKey.wasPressedThisFrame && AdvanceStage())
             {
                 InteractionStage = StreakStage;
                 interactionStarted = Time.time;
+                interactionMaxRadius = InteractionRadius;
+                interactionExpanding = true;
+                interactionTargets.Clear();
             }
         }
         if (player.DashRequestedThisFrame && AdvanceStage())
             player.StartDash(StreakStage);
+        if (keyboard != null && keyboard.aKey.wasPressedThisFrame)
+            UpdateTiming();
         UpdateFeedback();
+    }
+
+    private void AdjustParryTolerance(bool success)
+    {
+        GameInfo info = Managers.Beat.GameInfo;
+        if (success)
+        {
+            ConsecutiveParryFailures = 0;
+            ConsecutiveParrySuccesses++;
+            TimingToleranceBonusSeconds = Mathf.Max(0f, TimingToleranceBonusSeconds
+                - info.ParryToleranceStepSeconds * ConsecutiveParrySuccesses);
+        }
+        else
+        {
+            ConsecutiveParrySuccesses = 0;
+            ConsecutiveParryFailures++;
+            TimingToleranceBonusSeconds = Mathf.Min(info.MaxParryToleranceBonusSeconds,
+                TimingToleranceBonusSeconds + info.ParryToleranceStepSeconds * ConsecutiveParryFailures);
+        }
     }
 
     private bool AdvanceStage()
     {
         StreakStage = CanAct ? Mathf.Min(StreakStage + 1, 3) : 0;
         return CanAct;
+    }
+
+    public void CancelActions()
+    {
+        parryStarted = attackStarted = interactionStarted = -10f;
+        interactionExpanding = false;
+        interactionTargets.Clear();
+        UpdateFeedback();
     }
 
     // Stage 0 uses the original base performance; stages 1-3 keep their existing scaling.
@@ -153,10 +209,23 @@ public sealed class OrbitActions : MonoBehaviour
         SetAlpha(swing, 1f - attackProgress);
 
         float interactionProgress = (Time.time - interactionStarted) / InteractionDuration;
-        interaction.gameObject.SetActive(interactionProgress < 1f);
-        float diameter = Mathf.Lerp(0.4f, InteractionRadius * 2f, Mathf.Clamp01(interactionProgress));
+        interaction.gameObject.SetActive(interactionExpanding);
+        InteractionPulseRadius = interactionExpanding ? Mathf.Lerp(0.2f, interactionMaxRadius, Mathf.Clamp01(interactionProgress)) : 0f;
+        float diameter = InteractionPulseRadius * 2f;
         interaction.localScale = new Vector3(diameter, diameter, 0.025f);
-        SetAlpha(interaction, 0.55f * (1f - interactionProgress));
+        SetAlpha(interaction, 0.55f * Mathf.Max(0.15f, 1f - interactionProgress));
+        if (interactionExpanding)
+        {
+            foreach (Collider2D target in Physics2D.OverlapCircleAll(InteractionCenter, InteractionPulseRadius))
+            {
+                RestorablePlant plant = target.GetComponent<RestorablePlant>();
+                if (plant != null && interactionTargets.Add(plant)) plant.Restore();
+                VineLadder vine = target.GetComponent<VineLadder>();
+                if (vine != null && interactionTargets.Add(vine)) vine.Restore();
+            }
+            if (interactionProgress >= 1f)
+                interactionExpanding = false;
+        }
     }
 
     private static void SetAlpha(Transform visual, float alpha)
@@ -178,6 +247,8 @@ public sealed class OrbitActions : MonoBehaviour
         GUI.color = Color.white;
         GUI.Label(new Rect(16f, 84f, 550f, 24f), $"Streak: {StreakStage}/3 (miss resets)    A: {ParryStage}    S: {AttackStage}    D: {InteractionStage}");
         GUI.Label(new Rect(16f, 108f, 650f, 24f), $"Counter: {CounterDamageMultiplier:P0} / Groggy: {CounterCausesGroggy}    Attack: x{AttackDamageMultiplier:0.0}    Interact radius: {InteractionRadius:0.00}");
+        GUI.Label(new Rect(16f, 132f, 720f, 24f), "D: restore blocks / grow vine    UP / DOWN: climb    SPACE: leave vine    RIGHT at top: exit");
+        GUI.Label(new Rect(16f, 188f, 720f, 24f), $"Timing: +/- {EffectiveTimingToleranceSeconds:0.000}s    Parry assist: +{TimingToleranceBonusSeconds:0.000}s    Fail: {ConsecutiveParryFailures}    Success: {ConsecutiveParrySuccesses}");
         GUI.matrix = Matrix4x4.identity;
         GUI.color = Color.white;
     }
